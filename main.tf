@@ -11,121 +11,79 @@ resource "aws_vpc" "main" {
 }
 
 resource "aws_subnet" "main" {
+  count             = 2
   vpc_id            = aws_vpc.main.id
-  cidr_block        = var.subnet_cidr
-  availability_zone = var.availability_zone
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone = element(var.availability_zones, count.index)
 
   tags = {
-    Name = "main-subnet"
+    Name = "main-subnet-${count.index}"
   }
 }
 
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
+resource "aws_eks_cluster" "main" {
+  name     = var.cluster_name
+  role_arn = aws_iam_role.eks_cluster.arn
 
-  tags = {
-    Name = "main-igw"
+  vpc_config {
+    subnet_ids = aws_subnet.main[*].id
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.eks_cluster_AmazonEKSClusterPolicy]
+}
+
+resource "aws_eks_fargate_profile" "main" {
+  cluster_name = aws_eks_cluster.main.name
+  fargate_profile_name = "main-fargate-profile"
+  pod_execution_role_arn = aws_iam_role.eks_fargate_pod.arn
+
+  subnet_ids = aws_subnet.main[*].id
+
+  selector {
+    namespace = "default"
   }
 }
 
-resource "aws_route_table" "main" {
-  vpc_id = aws_vpc.main.id
+resource "aws_iam_role" "eks_cluster" {
+  name = "eks-cluster-role"
 
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
-  }
-
-  tags = {
-    Name = "main-rt"
-  }
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
+        Principal = {
+          Service = "eks.amazonaws.com"
+        }
+      }
+    ]
+  })
 }
 
-resource "aws_route_table_association" "main" {
-  subnet_id      = aws_subnet.main.id
-  route_table_id = aws_route_table.main.id
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSClusterPolicy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.eks_cluster.name
 }
 
-resource "aws_db_instance" "example" {
-  allocated_storage    = 20
-  engine               = "mysql"
-  engine_version       = "8.0"
-  instance_class       = "db.t2.micro"
-  name                 = var.db_name
-  username             = var.db_username
-  password             = var.db_password
-  parameter_group_name = "default.mysql8.0"
-  skip_final_snapshot  = true
-  vpc_security_group_ids = [aws_security_group.db.id]
-  db_subnet_group_name = aws_db_subnet_group.main.name
+resource "aws_iam_role" "eks_fargate_pod" {
+  name = "eks-fargate-pod-role"
 
-  tags = {
-    Name = "example-db"
-  }
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
+        Principal = {
+          Service = "eks-fargate-pods.amazonaws.com"
+        }
+      }
+    ]
+  })
 }
 
-resource "aws_db_subnet_group" "main" {
-  name       = "main-db-subnet-group"
-  subnet_ids = [aws_subnet.main.id]
-
-  tags = {
-    Name = "main-db-subnet-group"
-  }
-}
-
-resource "aws_instance" "example" {
-  ami           = var.ami_id
-  instance_type = var.instance_type
-
-  vpc_security_group_ids = [aws_security_group.instance.id]
-  subnet_id              = aws_subnet.main.id
-  key_name               = var.key_name
-
-  tags = {
-    Name = "ExampleInstance"
-  }
-}
-
-resource "aws_security_group" "instance" {
-  vpc_id = aws_vpc.main.id
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "instance-sg"
-  }
-}
-
-resource "aws_security_group" "db" {
-  vpc_id = aws_vpc.main.id
-
-  ingress {
-    from_port   = 3306
-    to_port     = 3306
-    protocol    = "tcp"
-    cidr_blocks = [aws_vpc.main.cidr_block]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "db-sg"
-  }
+resource "aws_iam_role_policy_attachment" "eks_fargate_pod_AmazonEKSFargatePodExecutionRolePolicy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSFargatePodExecutionRolePolicy"
+  role       = aws_iam_role.eks_fargate_pod.name
 }
